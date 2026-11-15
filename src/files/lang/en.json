@@ -982,5 +982,6 @@
     "最近10次": "Last 10",
     "最佳": "Best",
     "估算": "Estimated from earlier text history (ends at the last line)",
-    "暂无会话": "No reading sessions yet"
+    "暂无会话": "No reading sessions yet",
+    "最近": "Last"
 }
