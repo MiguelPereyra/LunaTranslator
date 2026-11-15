@@ -2,12 +2,32 @@ import sqlite3, gobject, time, windows, NativeUtils
 import time
 import os
 from qtsymbols import *
-from myutils.config import findgameuidofpath, savehook_new_data
+from myutils.config import findgameuidofpath, savehook_new_data, _TR
 from myutils.wrapper import threader
 import threading
 from queue import Queue
 import windows
 import gobject
+from traceback import print_exc
+
+# 两行文本间隔超过这个时间（秒）就算新的阅读会话
+SESSION_GAP = 30 * 60
+# 短于这个时间（秒）的会话不参与“最佳”等统计，也不弹出总结
+SESSION_MIN = 5 * 60
+
+
+def formatduration(seconds: float) -> str:
+    minutes = int(round(seconds / 60))
+    if minutes < 60:
+        return "{} min".format(minutes)
+    return "{} h {:02d} min".format(minutes // 60, minutes % 60)
+
+
+def sessioncpm(start: float, stop: float, wordcount: int) -> float:
+    minutes = (stop - start) / 60
+    if minutes <= 0:
+        return 0
+    return wordcount / minutes
 
 
 class somedatabase:
@@ -73,6 +93,20 @@ class somedatabase:
             )
         except:
             pass
+        # 阅读会话：从第一行文本到游戏关闭（或超过 SESSION_GAP 没有新文本）
+        self.currentsession: "dict | None" = None
+        try:
+            self.sqlsavegameinfo.execute(
+                "CREATE TABLE game_sessions(id INTEGER PRIMARY KEY AUTOINCREMENT,gameinternalid INT,timestart BIGINT,timestop BIGINT,wordcount BIGINT,linecount INT,estimated INT);"
+            )
+            created = True
+        except:
+            created = False
+        if created:
+            try:
+                self.rebuildsessions()
+            except:
+                print_exc()
 
         self.checkgameplayingthread()
         self.wordcountthread()
@@ -245,6 +279,13 @@ class somedatabase:
         lastuid = None
         while True:
             t, uid, wc = self.wordcountqueue.get()
+            if wc is None:
+                # 游戏进程已结束（texthook.removeproc 放入的）
+                try:
+                    self.__endsession(uid, t)
+                except:
+                    print_exc()
+                continue
             if not uid:
                 continue
             if lastuid != uid:
@@ -254,3 +295,114 @@ class somedatabase:
                 "INSERT INTO game_word_count VALUES(?,?,?)",
                 (gameinternalid, t, wc),
             )
+            try:
+                self.__sessionadd(uid, t, wc)
+            except:
+                print_exc()
+
+    def gameended(self, uid):
+        # 走同一个队列，保证在最后几行文本之后处理
+        if uid:
+            self.wordcountqueue.put((time.time(), uid, None))
+
+    def __sessionadd(self, uid, t, wc):
+        s = self.currentsession
+        if s and (s["uid"] != uid or t - s["last"] > SESSION_GAP):
+            self.__endsession(None, None)
+            s = None
+        if s is None:
+            cur = self.sqlsavegameinfo.execute(
+                "INSERT INTO game_sessions VALUES(NULL,?,?,?,?,?,0)",
+                (self.__get_gameinternalid(uid), t, t, wc, 1),
+            )
+            self.currentsession = dict(
+                id=cur.lastrowid, uid=uid, start=t, last=t, wc=wc, lines=1
+            )
+            return
+        s["last"] = t
+        s["wc"] += wc
+        s["lines"] += 1
+        # 每行都写入，Luna 意外退出时会话也能保留（结束于最后一行）
+        self.sqlsavegameinfo.execute(
+            "UPDATE game_sessions SET timestop=?, wordcount=?, linecount=? WHERE id=?",
+            (t, s["wc"], s["lines"], s["id"]),
+        )
+
+    def __endsession(self, uid, t):
+        # uid/t 为 None：因换游戏或长时间无文本而结束，结束时间取最后一行
+        s = self.currentsession
+        if not s:
+            return
+        if uid is not None and uid != s["uid"]:
+            return
+        self.currentsession = None
+        gameclosed = t is not None and t - s["last"] <= SESSION_GAP
+        stop = max(t, s["last"]) if gameclosed else s["last"]
+        self.sqlsavegameinfo.execute(
+            "UPDATE game_sessions SET timestop=? WHERE id=?", (stop, s["id"])
+        )
+        if gameclosed and stop - s["start"] >= SESSION_MIN:
+            self.__notifysession(s["uid"], s["id"], s["start"], stop, s["wc"])
+
+    def __notifysession(self, uid, sid, start, stop, wc):
+        cpm = sessioncpm(start, stop, wc)
+        others = [
+            _ for _ in self.querysessions(uid) if _[0] != sid and _[3] - _[2] > 0
+        ]
+        msg = "{} · {} {} · {:.0f} CPM".format(
+            formatduration(stop - start), wc, _TR("字数").lower(), cpm
+        )
+        if others:
+            totalwc = sum(_[4] for _ in others)
+            totalmin = sum(_[3] - _[2] for _ in others) / 60
+            msg += " ({} {:.0f})".format(_TR("平均"), totalwc / totalmin)
+        title = _TR("会话结束")
+        try:
+            title += " · " + savehook_new_data[uid]["title"]
+        except:
+            pass
+        gobject.base.displayinfomessage(title + ": " + msg, "<msg_info_refresh>")
+
+        def _tray():
+            try:
+                gobject.base.showtraymessage(title, msg, lambda: None)
+            except:
+                pass
+
+        gobject.base.safeinvokefunction.emit(_tray)
+
+    def querysessions(self, gameuid: "str|None"):
+        # [(id, gameuid, timestart, timestop, wordcount, linecount, estimated)]，新的在前
+        sql = "SELECT id,gameinternalid,timestart,timestop,wordcount,linecount,estimated FROM game_sessions"
+        args = ()
+        if gameuid:
+            sql += " WHERE gameinternalid = ?"
+            args = (self.__get_gameinternalid(gameuid),)
+        res = []
+        for _id, gid, s, e, wc, n, est in self.sqlsavegameinfo.execute(
+            sql + " ORDER BY timestart DESC", args
+        ).fetchall():
+            uid = gameuid if gameuid else self.__get_gameuid(gid)
+            if uid:
+                res.append((_id, uid, s, e, wc, n, est))
+        return res
+
+    def rebuildsessions(self):
+        # 根据已有的逐行字数记录重建以前的会话（没有记录游戏关闭时间，结束取最后一行）
+        rows = self.sqlsavegameinfo.execute(
+            "SELECT gameinternalid,time,wordcount FROM game_word_count ORDER BY gameinternalid,time"
+        ).fetchall()
+        sessions = []
+        for gid, t, wc in rows:
+            if sessions and sessions[-1][0] == gid and t - sessions[-1][2] <= SESSION_GAP:
+                last = sessions[-1]
+                last[2] = t
+                last[3] += wc
+                last[4] += 1
+            else:
+                sessions.append([gid, t, t, wc, 1])
+        sessions.sort(key=lambda _: _[1])
+        self.sqlsavegameinfo.executemany(
+            "INSERT INTO game_sessions VALUES(NULL,?,?,?,?,?,1)",
+            [tuple(_) for _ in sessions],
+        )

@@ -45,6 +45,7 @@ from gui.inputdialog import (
 )
 from gui.setting.textinput import gethookgrid_em, gethookgrid
 from gui.specialwidget import chartwidget
+from gui.gamemanager.sessions import sessionsview
 from gui.gamemanager.common import tagitem
 from gui.usefulwidget import (
     makecardrow,
@@ -926,16 +927,21 @@ class dialog_setting_game_internal(QWidget):
         chart2.xtext = chart.xtext
         chart2.ytext = str
 
-        refreshcallback = functools.partial(self.refresh, chart, chart2, gameuid)
+        sessions = sessionsview(self)
+        refreshcallback = functools.partial(
+            self.refresh, chart, chart2, gameuid, sessions
+        )
         stack = QStackedWidget()
         stack.addWidget(chart)
         stack.addWidget(chart2)
+        stack.addWidget(sessions)
         # 文字计数/游戏时间 用 tabbar 切换图表栈（0=文字计数→chart2，
-        # 1=游戏时间→chart）
+        # 1=游戏时间→chart，2=阅读会话→sessions）
         tabs = self._stattabs = LTabBar()
         apply_segmented_slide_bar_style(tabs)
         tabs.addTab("文字计数")
         tabs.addTab("游戏时间")
+        tabs.addTab("阅读会话")
         # 编辑游戏时间（timelistediter）：仅游戏时间页签下显示
         btnedit = getIconButton(
             icon="fa.edit",
@@ -947,13 +953,17 @@ class dialog_setting_game_internal(QWidget):
         btnedit.setVisible(globalconfig.get("statisticvistm", True))
 
         def _tabswitch(idx):
-            globalconfig["statisticvistm"] = bool(idx)
-            stack.setCurrentIndex(1 - idx)
+            globalconfig["statistictab"] = idx
+            if idx < 2:
+                globalconfig["statisticvistm"] = bool(idx)
+            stack.setCurrentIndex([1, 0, 2][idx])
             btnedit.setVisible(idx == 1)
+            btn.setVisible(idx != 2)
             refreshcallback()
 
-        tabs.currentChanged.connect(_tabswitch)
-        tabs.setCurrentIndex(1 if globalconfig.get("statisticvistm", True) else 0)
+        _initialtab = globalconfig.get(
+            "statistictab", 1 if globalconfig.get("statisticvistm", True) else 0
+        )
 
         btn = IconButton(
             # [未选中=热力图, 选中=折线]（IconButton 支持按勾选态取图标）
@@ -989,6 +999,9 @@ class dialog_setting_game_internal(QWidget):
             refreshcallback()
 
         btn2.clicked.connect(_clickquanju)
+        tabs.currentChanged.connect(_tabswitch)
+        tabs.setCurrentIndex(_initialtab if 0 <= _initialtab < 3 else 1)
+        _tabswitch(tabs.currentIndex())
         formLayout.addLayout(
             getboxlayout(
                 [
@@ -1053,8 +1066,10 @@ class dialog_setting_game_internal(QWidget):
             lists.append((k, everyday[k]))
         return lists
 
-    def refresh(self, chart: chartwidget, chart2: chartwidget, gameuid):
+    def refresh(self, chart: chartwidget, chart2: chartwidget, gameuid, sessions=None):
         _gameuid = None if self.__quanju_wc else gameuid
+        if sessions is not None and self._stattabs.currentIndex() == 2:
+            sessions.refresh(_gameuid)
 
         __ = gobject.base.somedatabase.querytraceplaytime(_gameuid)
         _cnt = sum([_[1] - _[0] for _ in __])

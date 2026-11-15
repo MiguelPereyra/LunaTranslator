@@ -458,6 +458,10 @@ class texthook(basetext):
             return
         self.pids[self.gameuid].discard(pid)
         if len(self.pids[self.gameuid]) == 0:
+            try:
+                gobject.base.somedatabase.gameended(self.gameuid)
+            except:
+                print_exc()
             self.gameuid = 0
             self.autohookmonitorthread()
 

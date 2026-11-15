@@ -971,5 +971,16 @@
     "左上": "Arriba a la izquierda",
     "右上": "Arriba a la derecha",
     "中上": "Arriba al centro",
-    "鼠标穿透范围框": "Clic a través del recuadro"
+    "鼠标穿透范围框": "Clic a través del recuadro",
+    "阅读会话": "Sesiones de lectura",
+    "会话结束": "Sesión terminada",
+    "会话数": "Sesiones",
+    "日期": "Fecha",
+    "时长": "Duración",
+    "字数": "Caracteres",
+    "平均": "Promedio",
+    "最近10次": "Últimas 10",
+    "最佳": "Mejor",
+    "估算": "Estimada a partir del historial (termina en la última línea)",
+    "暂无会话": "Aún no hay sesiones de lectura"
 }

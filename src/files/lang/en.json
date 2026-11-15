@@ -971,5 +971,16 @@
     "左上": "Top Left",
     "右上": "Top Right",
     "中上": "Top Center",
-    "鼠标穿透范围框": "Range Box Click-through"
+    "鼠标穿透范围框": "Range Box Click-through",
+    "阅读会话": "Reading Sessions",
+    "会话结束": "Session ended",
+    "会话数": "Sessions",
+    "日期": "Date",
+    "时长": "Duration",
+    "字数": "Characters",
+    "平均": "Average",
+    "最近10次": "Last 10",
+    "最佳": "Best",
+    "估算": "Estimated from earlier text history (ends at the last line)",
+    "暂无会话": "No reading sessions yet"
 }
