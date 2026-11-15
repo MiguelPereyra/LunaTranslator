@@ -89,7 +89,8 @@ class sessionsview(QWidget):
         if showgame:
             headers.append("游戏")
         headers += ["时长", "字数", "CPM"]
-        self.model.setHorizontalHeaderLabels(headers)
+        # 末尾空列吸收多余宽度
+        self.model.setHorizontalHeaderLabels(headers + [""])
         for _id, uid, start, stop, wc, lines, estimated in sessions:
             row = []
             date = datetime.fromtimestamp(start).strftime("%Y-%m-%d %H:%M")
@@ -110,9 +111,8 @@ class sessionsview(QWidget):
                         self.palette().color(QPalette.ColorRole.PlaceholderText)
                     )
             self.model.appendRow(row)
+        # 列宽按内容，CPM 紧跟在字数后面；多余空间放在最后一个空列
         header = self.table.horizontalHeader()
+        header.setMinimumSectionSize(70)
         header.setSectionResizeMode(QHeaderView.ResizeMode.ResizeToContents)
-        if showgame:
-            header.setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
-        else:
-            header.setStretchLastSection(True)
+        header.setSectionResizeMode(len(headers), QHeaderView.ResizeMode.Stretch)
