@@ -529,7 +529,12 @@ class BASEOBJECT(QObject):
 
     def maybeneedtranslateshowhidetranslate(self):
         if globalconfig.get("showfanyi", True):
-            self.textgetmethod(self.currenttext_raw, is_auto_run=False, isRefresh=True)
+            self.textgetmethod(
+                self.currenttext_raw,
+                is_auto_run=False,
+                isRefresh=True,
+                isFromHook=getattr(self, "currenttext_fromhook", False),
+            )
             self.translation_ui.translate_text.showhidetranslate(True)
         else:
             self.translation_ui.translate_text.showhidetranslate(False)
@@ -634,6 +639,7 @@ class BASEOBJECT(QObject):
             if not isRefresh:
                 self.currenttext = text
                 self.currenttext_raw = origin
+                self.currenttext_fromhook = isFromHook
                 self.statusok = statusok
                 self.currenttranslate = ""
                 self.currenttranslate_1 = ""
