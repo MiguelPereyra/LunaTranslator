@@ -97,11 +97,18 @@ class somedatabase:
         self.currentsession: "dict | None" = None
         try:
             self.sqlsavegameinfo.execute(
-                "CREATE TABLE game_sessions(id INTEGER PRIMARY KEY AUTOINCREMENT,gameinternalid INT,timestart BIGINT,timestop BIGINT,wordcount BIGINT,linecount INT,estimated INT);"
+                "CREATE TABLE game_sessions(id INTEGER PRIMARY KEY AUTOINCREMENT,gameinternalid INT,timestart BIGINT,timestop BIGINT,wordcount BIGINT,linecount INT,estimated INT,excluded INT DEFAULT 0);"
             )
             created = True
         except:
             created = False
+            # 旧表没有 excluded 列（手动排除出统计的会话）
+            try:
+                self.sqlsavegameinfo.execute(
+                    "ALTER TABLE game_sessions ADD COLUMN excluded INT DEFAULT 0"
+                )
+            except:
+                pass
         if created:
             try:
                 self.rebuildsessions()
@@ -312,7 +319,7 @@ class somedatabase:
             s = None
         if s is None:
             cur = self.sqlsavegameinfo.execute(
-                "INSERT INTO game_sessions VALUES(NULL,?,?,?,?,?,0)",
+                "INSERT INTO game_sessions(gameinternalid,timestart,timestop,wordcount,linecount,estimated) VALUES(?,?,?,?,?,0)",
                 (self.__get_gameinternalid(uid), t, t, wc, 1),
             )
             self.currentsession = dict(
@@ -346,8 +353,11 @@ class somedatabase:
 
     def __notifysession(self, uid, sid, start, stop, wc):
         cpm = sessioncpm(start, stop, wc)
+        # 与统计页一致：不算本次、手动排除的和过短的会话
         others = [
-            _ for _ in self.querysessions(uid) if _[0] != sid and _[3] - _[2] > 0
+            _
+            for _ in self.querysessions(uid)
+            if _[0] != sid and not _[7] and _[3] - _[2] >= SESSION_MIN
         ]
         msg = "{} · {} {} · {:.0f} CPM".format(
             formatduration(stop - start), wc, _TR("字数").lower(), cpm
@@ -372,20 +382,26 @@ class somedatabase:
         gobject.base.safeinvokefunction.emit(_tray)
 
     def querysessions(self, gameuid: "str|None"):
-        # [(id, gameuid, timestart, timestop, wordcount, linecount, estimated)]，新的在前
-        sql = "SELECT id,gameinternalid,timestart,timestop,wordcount,linecount,estimated FROM game_sessions"
+        # [(id, gameuid, timestart, timestop, wordcount, linecount, estimated, excluded)]，新的在前
+        sql = "SELECT id,gameinternalid,timestart,timestop,wordcount,linecount,estimated,excluded FROM game_sessions"
         args = ()
         if gameuid:
             sql += " WHERE gameinternalid = ?"
             args = (self.__get_gameinternalid(gameuid),)
         res = []
-        for _id, gid, s, e, wc, n, est in self.sqlsavegameinfo.execute(
+        for _id, gid, s, e, wc, n, est, exc in self.sqlsavegameinfo.execute(
             sql + " ORDER BY timestart DESC", args
         ).fetchall():
             uid = gameuid if gameuid else self.__get_gameuid(gid)
             if uid:
-                res.append((_id, uid, s, e, wc, n, est))
+                res.append((_id, uid, s, e, wc, n, est, bool(exc)))
         return res
+
+    def setsessionexcluded(self, ids: "list[int]", excluded: bool):
+        self.sqlsavegameinfo.executemany(
+            "UPDATE game_sessions SET excluded=? WHERE id=?",
+            [(int(excluded), _id) for _id in ids],
+        )
 
     def rebuildsessions(self):
         # 根据已有的逐行字数记录重建以前的会话（没有记录游戏关闭时间，结束取最后一行）
@@ -403,6 +419,6 @@ class somedatabase:
                 sessions.append([gid, t, t, wc, 1])
         sessions.sort(key=lambda _: _[1])
         self.sqlsavegameinfo.executemany(
-            "INSERT INTO game_sessions VALUES(NULL,?,?,?,?,?,1)",
+            "INSERT INTO game_sessions(gameinternalid,timestart,timestop,wordcount,linecount,estimated) VALUES(?,?,?,?,?,1)",
             [tuple(_) for _ in sessions],
         )

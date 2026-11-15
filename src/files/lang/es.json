@@ -983,5 +983,8 @@
     "最佳": "Mejor",
     "估算": "Estimada a partir del historial (termina en la última línea)",
     "暂无会话": "Aún no hay sesiones de lectura",
-    "最近": "Últimas"
+    "最近": "Últimas",
+    "从统计中排除": "Excluir de las estadísticas",
+    "重新计入统计": "Volver a incluir en las estadísticas",
+    "已从统计中排除": "Excluida de las estadísticas"
 }

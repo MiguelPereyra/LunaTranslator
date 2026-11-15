@@ -40,6 +40,14 @@ def _weightedcpm(sessions):
     return sum(_[4] for _ in sessions) / (seconds / 60)
 
 
+def _counted(sessions):
+    # 参与统计/图表的会话：没有被手动排除，且不短于 SESSION_MIN
+    return [_ for _ in sessions if not _[7] and _[3] - _[2] >= SESSION_MIN]
+
+
+SESSIONIDROLE = Qt.ItemDataRole.UserRole + 1
+
+
 class sessionsview(QWidget):
     """阅读会话：每次会话的时长、字数、CPM（从第一行文本到游戏关闭）"""
 
@@ -75,6 +83,11 @@ class sessionsview(QWidget):
         self.table.setSelectionBehavior(
             QAbstractItemView.SelectionBehavior.SelectRows
         )
+        self.table.setSelectionMode(
+            QAbstractItemView.SelectionMode.ExtendedSelection
+        )
+        self.table.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.table.customContextMenuRequested.connect(self.__showmenu)
         self.table.verticalHeader().hide()
         self.table.setMinimumHeight(120)
         # 图表和表格之间可拖动调整高度
@@ -85,25 +98,64 @@ class sessionsview(QWidget):
         split.setSizes([260, 300])
         lay.addWidget(split, 1)
         self.__key = None
+        self.__gameuid = None
         self.__sessions = []
 
     def __countchanged(self, idx):
         globalconfig["sessionchartcount"] = idx
         self.__fillchart(self.__sessions)
 
+    def __showmenu(self, pos):
+        rows = {i.row() for i in self.table.selectionModel().selectedRows()}
+        clicked = self.table.indexAt(pos)
+        if clicked.isValid() and clicked.row() not in rows:
+            # 右键点在未选中的行上：只操作这一行
+            self.table.selectRow(clicked.row())
+            rows = {clicked.row()}
+        if not rows:
+            return
+        byid = {_[0]: _ for _ in self.__sessions}
+        ids = []
+        for row in rows:
+            _id = self.model.item(row, 0).data(SESSIONIDROLE)
+            if _id in byid:
+                ids.append(_id)
+        if not ids:
+            return
+        menu = QMenu(self)
+        anyincluded = any(not byid[_][7] for _ in ids)
+        anyexcluded = any(byid[_][7] for _ in ids)
+        exclude = menu.addAction(_TR("从统计中排除")) if anyincluded else None
+        include = menu.addAction(_TR("重新计入统计")) if anyexcluded else None
+        action = menu.exec(self.table.viewport().mapToGlobal(pos))
+        if action is None or action not in (exclude, include):
+            return
+        gobject.base.somedatabase.setsessionexcluded(ids, action is exclude)
+        self.__key = None
+        self.refresh(self.__gameuid)
+
     def refresh(self, gameuid: "str|None"):
         sessions = gobject.base.somedatabase.querysessions(gameuid)
-        key = (gameuid, len(sessions), sessions[0][3] if sessions else 0)
+        key = (
+            gameuid,
+            len(sessions),
+            sessions[0][3] if sessions else 0,
+            sum(_[7] for _ in sessions),
+        )
         if key == self.__key:
             return
         self.__key = key
+        self.__gameuid = gameuid
         self.__sessions = sessions
         self.__fillsummary(sessions)
         self.__fillchart(sessions)
+        scroll = self.table.verticalScrollBar().value()
         self.__filltable(sessions, showgame=not gameuid)
+        # 等表格重新布局（滚动范围更新）后再恢复位置
+        QTimer.singleShot(0, lambda: self.table.verticalScrollBar().setValue(scroll))
 
     def __fillchart(self, sessions):
-        valid = [_ for _ in sessions if _[3] - _[2] >= SESSION_MIN]
+        valid = _counted(sessions)
         n = CHART_COUNTS[self.count.currentIndex()]
         if n:
             valid = valid[:n]
@@ -111,7 +163,7 @@ class sessionsview(QWidget):
         self.chart.setdata([(_[2], sessioncpm(_[2], _[3], _[4])) for _ in valid])
 
     def __fillsummary(self, sessions):
-        valid = [_ for _ in sessions if _[3] - _[2] >= SESSION_MIN]
+        valid = _counted(sessions)
         if not valid:
             self.summary.setText(_TR("暂无会话"))
             return
@@ -144,12 +196,18 @@ class sessionsview(QWidget):
         headers += ["时长", "字数", "CPM"]
         # 末尾空列吸收多余宽度
         self.model.setHorizontalHeaderLabels(headers + [""])
-        for _id, uid, start, stop, wc, lines, estimated in sessions:
+        for _id, uid, start, stop, wc, lines, estimated, excluded in sessions:
             row = []
             date = datetime.fromtimestamp(start).strftime("%Y-%m-%d %H:%M")
             dateitem = _item(date + (" *" if estimated else ""))
+            dateitem.setData(_id, SESSIONIDROLE)
+            tips = []
             if estimated:
-                dateitem.setToolTip(_TR("估算"))
+                tips.append(_TR("估算"))
+            if excluded:
+                tips.append(_TR("已从统计中排除"))
+            if tips:
+                dateitem.setToolTip("\n".join(tips))
             row.append(dateitem)
             if showgame:
                 row.append(_item(savehook_new_data.get(uid, {}).get("title", "")))
@@ -158,11 +216,16 @@ class sessionsview(QWidget):
             row.append(_item(str(wc), right=True))
             cpm = sessioncpm(start, stop, wc) if duration >= 60 else None
             row.append(_item("{:.0f}".format(cpm) if cpm else "—", right=True))
-            if duration < SESSION_MIN:
+            if duration < SESSION_MIN or excluded:
                 for item in row:
                     item.setForeground(
                         self.palette().color(QPalette.ColorRole.PlaceholderText)
                     )
+            if excluded:
+                for item in row:
+                    font = item.font()
+                    font.setStrikeOut(True)
+                    item.setFont(font)
             self.model.appendRow(row)
         # 列宽按内容，CPM 紧跟在字数后面；多余空间放在最后一个空列
         header = self.table.horizontalHeader()
